@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "general",
   "description": "为 Agent 提供一个 ask_user 工具，可在思考中随时向用户弹出多页问卷（单选/多选/问答）并等待回答",
-  "author": "QwenPaw QA Agent",
+  "author": "Levodoubt",
   "entry": {
     "backend": "plugin.py",
     "frontend": "dist/index.js"
