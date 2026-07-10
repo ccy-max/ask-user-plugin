@@ -1,0 +1,24 @@
+{
+  "id": "ask-user",
+  "name": "问卷弹窗",
+  "version": "1.0.0",
+  "type": "general",
+  "description": "为 Agent 提供一个 ask_user 工具，可在思考中随时向用户弹出多页问卷（单选/多选/问答）并等待回答",
+  "author": "QwenPaw QA Agent",
+  "entry": {
+    "backend": "plugin.py",
+    "frontend": "dist/index.js"
+  },
+  "dependencies": [],
+  "min_version": "1.1.5",
+  "meta": {
+    "tools": [
+      {
+        "name": "ask_user",
+        "description": "向用户弹出一个多页问卷并等待回答。参数：questions (问题列表), title (标题,可选)。问题类型：single(单选), multi(多选), text(问答)。所有选择题含'其他'文本。问卷末页有独立'其他意见'框。",
+        "icon": "❓",
+        "config_fields": []
+      }
+    ]
+  }
+}
