@@ -1,7 +1,7 @@
 {
   "id": "qwenpaw-ask-user-plugin",
   "name": "问卷弹窗",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "type": "general",
   "description": "为 Agent 提供一个 ask_user 工具，可在思考中随时向用户弹出多页问卷（单选/多选/问答）并等待回答。已适配 QwenPaw 2.x：通过官方 register_tool + register_middleware 接入，带提交密钥、超时与答案校验。",
   "author": "Zero",

@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 _PLUGIN_DIR = Path(__file__).parent.resolve()
 
 # How long the agent blocks for a user answer before timing out.
-ASK_TIMEOUT_SECONDS = 1800.0  # 30 minutes
+# Kept short so an abandoned questionnaire cannot wedge the session long.
+ASK_TIMEOUT_SECONDS = 600.0  # 10 minutes
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -44,23 +45,22 @@ ASK_TIMEOUT_SECONDS = 1800.0  # 30 minutes
 # ══════════════════════════════════════════════════════════════════════
 
 async def qwenpaw_ask_user(questions: list[dict], title: str = "") -> str:
-    """向用户弹出一个多页问卷并等待回答。
+    """向用户弹出一个多页问卷并阻塞等待回答。
 
-    调用后会在屏幕上弹出问卷窗口，用户可以逐页回答。
-    支持单选（single）、多选（multi）、问答题（text）。
-    所有选择题均附带“其他”文本框。问卷最后一页有一个与问题同级的“其他意见”文本框。
+    【调用规范 — 必须严格遵守，否则工具会报错】
+    1. 只在确实需要用户输入时才调用；调用后当前对话会暂停直到用户作答。
+    2. questions 必须是 list，每个元素是一个 dict，type 只能是以下三选一：
+       - 单选 single：  {"type":"single","title":"问题","options":["选项A","选项B"]}
+       - 多选 multi：   {"type":"multi", "title":"问题","options":["选项A","选项B"]}
+       - 问答 text：    {"type":"text",  "title":"问题"}
+    3. options 必须是【纯字符串数组】，例如 ["A","B"]。严禁传对象数组
+       （如 {"label":..,"value":..}）或带 value 字段。
+    4. title 可选，字符串。
+    5. 一次最多 20 题。
 
-    Args:
-        title: 问卷标题（可选）
-        questions: 问题列表，每项为：
-            {"type": "single", "title": "...", "options": ["A", "B", ...]}
-            {"type": "multi",  "title": "...", "options": ["A", "B", ...]}
-            {"type": "text",   "title": "..."}
-
-    Returns:
-        JSON 字符串，格式为：
-        {"answers": {qN: {type, value, other}, ...}, "other": "...", "skipped": false}
-        或 {"skipped": true}（用户跳过/超时）
+    返回（JSON 字符串）：
+      用户作答：{"answers":{"q0":{"type":..,"value":..,"other":""},...},"other":"..","skipped":false}
+      跳过/超时：{"skipped":true,"error":".."}   ← error 会说明原因，请据此修正后重试。
     """
     return json.dumps(
         {"skipped": False, "message": "handled by ask-user middleware"},
@@ -71,6 +71,49 @@ async def qwenpaw_ask_user(questions: list[dict], title: str = "") -> str:
 # ══════════════════════════════════════════════════════════════════════
 # Middleware: intercept ask_user tool calls
 # ══════════════════════════════════════════════════════════════════════
+
+
+def _validate_questions_format(questions: Any) -> str:
+    """Return an actionable error string if the questions payload is malformed.
+
+    The message is meant to be returned to the LLM so it can self-correct on
+    the next attempt (e.g. "options must be a plain string array").
+    """
+    if not isinstance(questions, list) or not questions:
+        return (
+            "questions 必须是非空 list。示例: "
+            '[{"type":"single","title":"问题","options":["A","B"]}]'
+        )
+    if len(questions) > 20:
+        return f"questions 最多 20 题，当前 {len(questions)} 题。"
+    valid = {"single", "multi", "text"}
+    for i, q in enumerate(questions):
+        if not isinstance(q, dict):
+            return f"第 {i} 题必须是 dict，例如 " \
+                   '{"type":"single","title":"问题","options":["A","B"]}'
+        t = q.get("type")
+        if t not in valid:
+            return (
+                f"第 {i} 题 type 必须是 single/multi/text，收到 {t!r}。"
+                ' 示例: {"type":"single","title":"问题","options":["A","B"]}'
+            )
+        if t in ("single", "multi"):
+            opts = q.get("options")
+            if not isinstance(opts, list) or not opts:
+                return (
+                    f"第 {i} 题（{t}）options 必须是非空 list，"
+                    '例如 ["A","B"]（纯字符串，禁止对象）。'
+                )
+            for o in opts:
+                if isinstance(o, dict):
+                    return (
+                        f"第 {i} 题 options 必须是纯字符串数组，"
+                        '禁止 {"label":..,"value":..} 形式。'
+                        ' 正确示例: ["选项A","选项B"]'
+                    )
+                if not isinstance(o, str) or not str(o).strip():
+                    return f"第 {i} 题 options 含非法项: {o!r}（必须是非空字符串）"
+    return ""
 
 class AskUserMiddleware(MiddlewareBase):
     """Blocks the agent on a Future while the user fills in a questionnaire."""
@@ -103,9 +146,26 @@ class AskUserMiddleware(MiddlewareBase):
 
     async def _handle_ask_user(self, agent: Any, tool_call: Any) -> dict:
         svc = get_question_service()
-        params: dict = getattr(tool_call, "input", None) or {}
+        # QwenPaw 2.x may hand tool_call.input as a JSON string rather than a
+        # dict, depending on the agent/serialization path. Normalize both.
+        raw_input = getattr(tool_call, "input", None)
+        if isinstance(raw_input, str):
+            try:
+                raw_input = json.loads(raw_input)
+            except (ValueError, TypeError):
+                raw_input = {}
+        params: dict = raw_input or {}
         questions: list[dict] = params.get("questions", [])
         title: str = params.get("title", "请回答以下问题")
+
+        # Early, explicit validation so the model gets an actionable error
+        # instead of a stack trace it cannot interpret.
+        fmt_err = _validate_questions_format(questions)
+        if fmt_err:
+            return {
+                "skipped": True,
+                "error": fmt_err,
+            }
 
         ctx = getattr(agent, "_request_context", None) or {}
         session_id = str(ctx.get("session_id", "") or "")
@@ -140,9 +200,9 @@ class AskUserMiddleware(MiddlewareBase):
             )
 
         msg = Msg(
-            agent.name if hasattr(agent, "name") else "agent",
-            [TextBlock(type="text", text="\n".join(lines))],
-            "assistant",
+            name=agent.name if hasattr(agent, "name") else "agent",
+            content=[TextBlock(type="text", text="\n".join(lines))],
+            role="assistant",
             metadata={
                 "message_type": "agent_question",
                 "request_id": pq.request_id,
@@ -308,9 +368,10 @@ class AskUserPlugin:
             tool_name="qwenpaw_ask_user",
             tool_func=qwenpaw_ask_user,
             description=(
-                "向用户弹出一个多页问卷并等待回答。参数：questions (问题列表), "
-                "title (标题,可选)。问题类型：single(单选), multi(多选), text(问答)。"
-                "所有选择题含'其他'文本。问卷末页有独立'其他意见'框。"
+                "向用户弹出一个多页问卷并阻塞等待回答（【必读规范】questions 必须是 list，"
+                "每项 type∈single/multi/text：single/multi 须带 options 且为【纯字符串数组】"
+                '如 ["A","B"]，严禁对象数组；text 只需 title；最多20题；title可选。'
+                "格式错误会返回 {skipped:true,error:原因}，请照改后重试。返回用户作答或跳过。"
             ),
             icon="❓",
             tool_type="internal",
@@ -322,7 +383,47 @@ class AskUserPlugin:
             priority=50,
         )
 
+        # Ship the companion skill so the agent knows how to call this tool
+        # correctly (parameter format, retries on validation errors).
+        self._install_skill(api)
+
         logger.info("✓ qwenpaw-ask-user-plugin registered")
+
+    def _install_skill(self, api: PluginApi) -> None:
+        """Copy skills/qwenpaw-ask-user into each workspace's skills dir.
+
+        Uses the supported workspace-created hook so the skill lands in every
+        workspace (existing + future) without hard-coding a path.
+        """
+        skill_src = _PLUGIN_DIR / "skills" / "qwenpaw-ask-user"
+        if not skill_src.exists():
+            return
+
+        def _copy_to(workspace_info: dict) -> None:
+            wdir = workspace_info.get("workspace_dir") or workspace_info.get(
+                "workspace",
+            )
+            if not wdir:
+                return
+            dest = Path(wdir) / "skills" / "qwenpaw-ask-user"
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+                import shutil
+                for f in skill_src.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, dest / f.name)
+                logger.info("Skill qwenpaw-ask-user -> %s", dest)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to install skill: %s", exc)
+
+        try:
+            api.register_workspace_created_hook(
+                hook_name="ask-user-install-skill",
+                callback=_copy_to,
+                reload_safe=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("register_workspace_created_hook unavailable: %s", exc)
 
 
 # Export

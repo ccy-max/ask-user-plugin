@@ -1,1 +1,0 @@
-﻿# Ask-User Plugin — no extra deps beyond QwenPaw core

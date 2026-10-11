@@ -34,7 +34,7 @@ _GC_MAX_PENDING = 200                 # hard cap on number of pending records
 # Default answer wait ceiling. The agent's call blocks at most this long;
 # after that the future resolves with a "skipped" (timeout) marker so a
 # missing user never wedges the agent. Configurable at create() time.
-DEFAULT_TIMEOUT_SECONDS = 1800.0      # 30 minutes
+DEFAULT_TIMEOUT_SECONDS = 600.0       # 10 minutes (agent blocks at most this long)
 
 # Question types understood by the frontend.
 VALID_TYPES = ("single", "multi", "text")
@@ -99,7 +99,13 @@ def _normalize_questions(raw: Any) -> list[QuestionDef]:
                     f"question #{i} ({q_type}) requires a non-empty 'options' list",
                 )
             for opt in options:
-                if not isinstance(opt, str) or not str(opt).strip():
+                # Accept both plain strings and {"label":..,"value":..} dicts
+                # (LLMs sometimes emit the latter). Normalize to a string.
+                if isinstance(opt, dict):
+                    opt_label = opt.get("label") or opt.get("value") or ""
+                else:
+                    opt_label = str(opt) if opt is not None else ""
+                if not str(opt_label).strip():
                     raise ValueError(
                         f"question #{i} has an invalid option {opt!r}",
                     )
@@ -336,11 +342,13 @@ class QuestionService:
             pq = self._pending.get(request_id)
             if pq is None:
                 return None
-            # Return a shallow copy with secret stripped for public callers.
+            # Build a secret-stripped public view via the shared helper.
+            view = self._public_view(pq)
             public = PendingQuestion(**{
-                k: v for k, v in pq.__dict__.items() if k != "secret"
+                k: v for k, v in view.items()
+                if k in PendingQuestion.__dataclass_fields__
             })
-            public.secret = ""
+            public.secret = view.get("secret", "")
             return public
 
     def get_secret(self, pq: PendingQuestion) -> str:

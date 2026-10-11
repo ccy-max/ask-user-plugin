@@ -1,5 +1,27 @@
 # 更新日志
 
+## v2.0.1 (2026-10-11) — 调用体验优化 + bug 修复
+
+真机调试后修复 3 个 QwenPaw 2.x 适配崩溃，并优化调用过程体验。
+
+### Bug 修复（真机实测发现）
+- **`tool_call.input` 崩溃**：QwenPaw 2.x 传 JSON 字符串而非 dict → 加 `json.loads` 兼容两种形态
+- **`Msg()` 位置参数崩溃**：2.x 的 Msg 是 pydantic 模型只收关键字参数 → 改 `Msg(name=, content=, role=)`
+- **options 对象数组被拒**：模型有时传 `{label,value}` → 归一化为 label 字符串
+- **`get_request` secret 剥离崩溃**：改用 `_public_view` 统一构造
+
+### 调用体验优化
+- **错误可见化**：格式校验失败返回清晰可操作错误文本（如"第 N 题 options 必须是纯字符串数组，禁止对象"），
+  Agent 可据此自我修正后重试，不再只在后端日志偷偷报错
+- **参数 schema 收紧**：工具 docstring/description 写死规范（options 必须纯字符串数组、type 限定、最多20题），
+  从源头减少模型畸形传参
+- **超时缩短**：阻塞超时 1800s → 600s（10分钟），废弃问卷不再长时间卡住会话
+- **删除 requirements.txt**：空文件触发 QwenPaw 2.2.2b4 热装 bug（`invalidate_caches` 崩溃），删除即修复
+
+### 配套 Skill
+- 新增 `skills/qwenpaw-ask-user/SKILL.md`：教 Agent 正确调用工具（参数格式、重试策略、何时用/不用）
+- `register()` 时通过 `register_workspace_created_hook(reload_safe=True)` 自动注入到 workspace skills 目录
+
 ## v2.0.0 (2026-10-11) — qwenpaw-ask-user-plugin
 
 适配 QwenPaw 2.x 全面重写，参照会话增强 Pro（session-tools-pro）的仓库规范。
@@ -21,7 +43,7 @@
 ### 安全与健壮性
 - **提交密钥**：每个 pending 请求生成一次性 `secret`，`/answer`、`/skip` 必须携带，
   仅知道 request_id 无法冒答（修复原版无鉴权风险）
-- **答案超时**：Agent 阻塞默认 30 分钟（可配）后自动 skip，杜绝永久卡死
+- **答案超时**：Agent 阻塞默认 30 分钟（v2.0.1 改为 10 分钟）后自动 skip，杜绝永久卡死
 - **答案校验**：后端按题型校验 value/options/other，非法提交被拒（400）且不丢请求
 - **状态机**：pending→answered/skipped/cancelled/expired 显式状态，GC 增强
 - 清理死代码：`tools/__init__.py` 占位、前端未使用的 `getApiUrl`
