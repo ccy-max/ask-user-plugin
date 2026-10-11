@@ -1,0 +1,47 @@
+name: Release on Tag
+
+# 打 tag（v*）时自动构建插件安装包并挂到 GitHub Release
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Build plugin package (zip)
+        run: python scripts/build_release.py "${GITHUB_REF_NAME}"
+
+      - name: Extract release notes for current version
+        run: python scripts/extract_release_notes.py "${GITHUB_REF_NAME}" > release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: qwenpaw-ask-user-plugin ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: dist/qwenpaw-ask-user-plugin-*.zip
+          draft: false
+          prerelease: false

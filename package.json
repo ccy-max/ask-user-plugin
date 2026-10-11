@@ -1,7 +1,8 @@
 {
-  "name": "ask-user-plugin",
-  "version": "1.0.0",
+  "name": "qwenpaw-ask-user-plugin",
+  "version": "2.0.0",
   "private": true,
+  "description": "QwenPaw plugin: ask the user a multi-page questionnaire (single/multi/text) and block until answered.",
   "scripts": {
     "build": "vite build"
   },
